@@ -1,3 +1,9 @@
 uvicorn~=0.35.0
 fastapi~=0.115.14
 count-tokens
+numpy~=2.3.1
+torch~=2.7.1
+transformers~=4.53.0
+faiss-cpu~=1.11.0
+python-dotenv~=1.1.1
+httpx~=0.28.1
