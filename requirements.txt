@@ -1,8 +1,10 @@
-uvicorn~=0.35.0
+uvicorn==0.35.0
 fastapi~=0.115.14
 count-tokens
 numpy~=2.3.1
-torch~=2.7.1
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.7.1+cpu
 transformers~=4.53.0
 faiss-cpu~=1.11.0
 python-dotenv~=1.1.1

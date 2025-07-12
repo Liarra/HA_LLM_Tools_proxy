@@ -16,6 +16,17 @@ def get_tool_label(tool: dict) -> str:
     tool_description = tool.get("function", {}).get("description", "")
     return f"{tool_name}:{tool_description}"
 
+def get_tool_label_by_name(tool_name:str) -> str:
+    """Get the tool label by its name. Assumes every tool has a unique name."""
+    if not isinstance(tool_name, str):
+        raise ValueError("Tool name must be a string.")
+    # Find the tool in the storage by its name
+    for tool in tool_definition_storage.values():
+        if tool.get("function", {}).get("name") == tool_name:
+            return get_tool_label(tool)
+    raise ValueError(f"Tool with name '{tool_name}' not found in storage.")
+
+
 tool_definition_storage=dict()
 def store_tool(tool: dict) -> None:
     """Store a tool in the memory pseudo-storage."""
@@ -52,14 +63,70 @@ def get_3_random_tools() -> list:
     import random
     return random.sample(list(tool_definition_storage.values()), 3)
 
+def get_whitelisted_labels() -> list:
+    """Get the labels of the whitelisted tools."""
+    ret= []
+    for wt in whitelisted_tool_names:
+        if not isinstance(wt, str):
+            raise ValueError("Whitelisted tool names must be strings.")
+        try:
+            label = get_tool_label_by_name(wt)
+            ret.append(label)
+        except ValueError as e:
+            print(f"Error getting label for whitelisted tool '{wt}': {e}")
+            continue
+    return ret
+
+def get_blacklisted_labels() -> list:
+    """Get the labels of the blacklisted tools."""
+    ret= []
+    for bt in blacklisted_tool_names:
+        if not isinstance(bt, str):
+            raise ValueError("Blacklisted tool names must be strings.")
+        try:
+            label = get_tool_label_by_name(bt)
+            ret.append(label)
+        except ValueError as e:
+            print(f"Error getting label for blacklisted tool '{bt}': {e}")
+            continue
+    return ret
+
+
+whitelisted_tool_names = ['GetLiveContext']
+blacklisted_tool_names = ['HassHumidifierMode', 'HassHumidifierSetPoint']
 def get_n_most_relevant_tools(request:str, n: int=3) -> list:
     """Get n most relevant tools from the storage."""
-    labels = embedding.retrieve_similar(request, k=n)
+    labels=get_whitelisted_labels()
+
+    # Save some spots for the whitelisted tools, increase the number of tools to retrieve to be able to
+    # remove the blacklisted tools if they are present in the results.
+    number_of_tools_to_retrieve= n-len(whitelisted_tool_names) + len(blacklisted_tool_names)
+
+    if number_of_tools_to_retrieve==0:
+        print("No more tools to retrieve, only whitelisted tools will be returned.")
+
+    else:
+        embedding_labels = embedding.retrieve_similar(request, k=number_of_tools_to_retrieve)
+        blacklisted_labels = get_blacklisted_labels()
+        for el in embedding_labels:
+            if len(labels)==n:
+                print("Reached the limit of tools to return, stopping.")
+                break
+            # If the label is blacklisted, skip it
+            if el[2] in blacklisted_labels:
+                print(f"Skipping blacklisted tool: {el[2]}")
+                continue
+            # If the label is already in the whitelisted tools, skip it
+            if el[2] in labels:
+                print(f"Skipping already included tool: {el[2]}")
+                continue
+            # Otherwise, add the label to the list
+            labels.append(el[2])
+            print(f"Tool {el[2]} with score {el[1]} was picked for this query")
 
     # Return the tools corresponding to the labels
     tools = []
-    for _, score, label in labels:
-        print (f"Tool {label} with score {score} was picked for this query")
+    for label in labels:
         h = crude_hash(label)
         if h in tool_definition_storage:
             tools.append(tool_definition_storage[h])

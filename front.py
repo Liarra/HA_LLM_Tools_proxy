@@ -204,18 +204,18 @@ async def chat_completions(request: Request):
     print_stats(body)
 
     # ---- Logging ----
-    # filename = f"{model}_{_current_timestamp()}.txt"
-    # log_path = _LOG_DIR / filename
-    # with log_path.open("w", encoding="utf-8") as fp:
-    #     _json.dump(body, fp, ensure_ascii=False, indent=2)
+    filename = f"{model}_{_current_timestamp()}.txt"
+    log_path = _LOG_DIR / filename
+    with log_path.open("w", encoding="utf-8") as fp:
+        json.dump(body, fp, ensure_ascii=False, indent=2)
 
     # ---- Strip all tools and add 3 random tools ----
     new_body = optimise_tools(body)
 
-    # filename = f"REWRITTEN_{model}_{_current_timestamp()}.txt"
-    # log_path = _LOG_DIR / filename
-    # with log_path.open("w", encoding="utf-8") as fp:
-    #     _json.dump(new_body, fp, ensure_ascii=False, indent=2)
+    filename = f"REWRITTEN_{model}_{_current_timestamp()}.txt"
+    log_path = _LOG_DIR / filename
+    with log_path.open("w", encoding="utf-8") as fp:
+        json.dump(new_body, fp, ensure_ascii=False, indent=2)
 
     # ---- Forward request to OpenAI API ----
     openai_api_url = _os.getenv("OPENAI_API_URL", "https://api.openai.com/v1")
