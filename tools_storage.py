@@ -103,13 +103,10 @@ def get_blacklisted_labels() -> list:
     return ret
 
 
-# Get whitelisted and blacklisted tool names from environment variables
-# Default values maintain backward compatibility
-_default_whitelist = ['GetLiveContext']
-_default_blacklist = ['HassHumidifierMode', 'HassHumidifierSetPoint']
-
-def _parse_tool_names_from_env(env_var: str, default_list: list) -> list:
+def _parse_tool_names_from_env(env_var: str, default_list=None) -> list:
     """Parse comma-separated tool names from environment variable."""
+    if default_list is None:
+        default_list = []
     env_value = os.getenv(env_var, "")
     if not env_value.strip():
         return default_list
@@ -118,18 +115,23 @@ def _parse_tool_names_from_env(env_var: str, default_list: list) -> list:
     # If after parsing we have an empty list, fall back to defaults
     return parsed_list if parsed_list else default_list
 
-whitelisted_tool_names = _parse_tool_names_from_env('WHITELISTED_TOOLS', _default_whitelist)
-blacklisted_tool_names = _parse_tool_names_from_env('BLACKLISTED_TOOLS', _default_blacklist)
+whitelisted_tool_names = _parse_tool_names_from_env('WHITELISTED_TOOLS')
+blacklisted_tool_names = _parse_tool_names_from_env('BLACKLISTED_TOOLS')
 def get_n_most_relevant_tools(request:str, n: int=3) -> list:
     """Get n most relevant tools from the storage."""
+    logger.info("Selecting %d most relevant tools for the request", n)
+    logger.debug(f"Will always include whitelisted tools: {whitelisted_tool_names}")
+    logger.debug(f"Will always exclude blacklisted tools: {blacklisted_tool_names}")
+
+    # Pre-populate the labels with whitelisted tools
     labels=get_whitelisted_labels()
 
     # Increase the number of tools to retrieve to be able to remove the blacklisted tools if they are present
     # in the results. Whitelisted tools may appear in the results, so no need to account for them.
-    number_of_tools_to_retrieve= n+  len(blacklisted_tool_names)
+    number_of_tools_to_retrieve= n+len(blacklisted_tool_names)
 
-    if number_of_tools_to_retrieve==0:
-        logger.info("No more tools to retrieve, only whitelisted tools will be returned.")
+    if n<=len(labels):
+        logger.warning("Number of tools to pick is less than the number of whitelisted tools - only whitelisted tools will be returned.")
 
     else:
         embedding_labels = embedding.retrieve_similar(request, k=number_of_tools_to_retrieve)
@@ -157,6 +159,7 @@ def get_n_most_relevant_tools(request:str, n: int=3) -> list:
         if h in tool_definition_storage:
             tools.append(tool_definition_storage[h])
 
+    logger.info(f"Returning {len(tools)} tools")
     return tools
 
 def save_tools(sqlite_file_path: str) -> None:
