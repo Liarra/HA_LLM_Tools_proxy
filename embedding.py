@@ -82,7 +82,7 @@ def retrieve_similar(text: str, k: int = 5) -> List[Tuple[int, float, str]]:
 def save_to_file(file_path: str):
     """Save the FAISS index to a file."""
     logger.info("Saving FAISS index to %s...", file_path)
-    logger.debug("ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
+    logger.debug("Saved FAISS index with ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
     faiss.write_index(_faiss_index, file_path)
 
 def load_from_file(file_path: str):
@@ -90,7 +90,7 @@ def load_from_file(file_path: str):
     global _faiss_index, _text_store
     logger.info("Loading FAISS index from %s...", file_path)
     _faiss_index = faiss.read_index(file_path)
-    logger.debug("ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
+    logger.debug("Loaded FAISS index with ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
 
 def get_labels() -> List[str]:
     """Return the list of texts currently stored in the FAISS index."""

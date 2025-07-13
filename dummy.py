@@ -106,9 +106,7 @@ async def chat_completions(request: Request):
 
     # ---- Print User Message ----
     user_message = get_user_message(body)
-    logger.debug("-"*10)
     logger.debug("User message: %s", user_message)
-    logger.debug("-"*10)
 
     # ---- Print messages stats ----
     system_message = get_system_message(body)
@@ -118,7 +116,6 @@ async def chat_completions(request: Request):
     logger.debug("Tokens in System message: %d", count_tokens(system_message))
     logger.debug("Tokens in User message: %d", count_tokens(user_message))
     logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
-    logger.debug("-"*10)
 
     # ---- Logging ----
     filename = f"{model}_{_current_timestamp()}.txt"

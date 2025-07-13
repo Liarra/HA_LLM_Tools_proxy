@@ -124,13 +124,11 @@ def add_tools_to_request(request_body: dict, tools: list) -> dict:
 
 def print_stats(message_body:dict):
     """Print statistics about the request body."""
-    logger.debug("-"*10)
     logger.debug("Tokens in System message: %d", count_tokens(get_system_message(message_body)))
     logger.debug("Tokens in User message: %d", count_tokens(get_user_message(message_body)))
     tools_dict = get_list_of_tools(message_body)
     tools_str = str(tools_dict)
     logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
-    logger.debug("-"*10)
 
 def add_descriptions_if_missing(tools: list) -> list:
     """Add descriptions to tools if they are missing."""
@@ -207,9 +205,7 @@ async def chat_completions(request: Request):
 
     # ---- Print User Message ----
     user_message = get_user_message(body)
-    logger.debug("-"*10)
     logger.debug("User message: %s", user_message)
-    logger.debug("-"*10)
 
     # ---- Print messages stats ----
     print_stats(body)

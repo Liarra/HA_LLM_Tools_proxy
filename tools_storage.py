@@ -109,9 +109,9 @@ def get_n_most_relevant_tools(request:str, n: int=3) -> list:
     """Get n most relevant tools from the storage."""
     labels=get_whitelisted_labels()
 
-    # Save some spots for the whitelisted tools, increase the number of tools to retrieve to be able to
-    # remove the blacklisted tools if they are present in the results.
-    number_of_tools_to_retrieve= n-len(whitelisted_tool_names) + len(blacklisted_tool_names)
+    # Increase the number of tools to retrieve to be able to remove the blacklisted tools if they are present
+    # in the results. Whitelisted tools may appear in the results, so no need to account for them.
+    number_of_tools_to_retrieve= n+  len(blacklisted_tool_names)
 
     if number_of_tools_to_retrieve==0:
         logger.info("No more tools to retrieve, only whitelisted tools will be returned.")
@@ -125,7 +125,7 @@ def get_n_most_relevant_tools(request:str, n: int=3) -> list:
                 break
             # If the label is blacklisted, skip it
             if el[2] in blacklisted_labels:
-                logger.warning("Skipping blacklisted tool: %s", el[2])
+                logger.debug("Skipping blacklisted tool: %s", el[2])
                 continue
             # If the label is already in the whitelisted tools, skip it
             if el[2] in labels:
