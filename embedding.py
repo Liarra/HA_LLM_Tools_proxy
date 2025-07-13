@@ -1,9 +1,20 @@
 from typing import List, Tuple
+import logging
+import os
 
 from transformers import AutoModel, AutoTokenizer
 import faiss  # type: ignore
 import numpy as _np
 import torch
+
+# Configure logging only if not already configured
+if not logging.getLogger().handlers:
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+logger = logging.getLogger(__name__)
 
 #----------------------------------------------------------------------------
 # Embedding → FAISS helper
@@ -70,16 +81,16 @@ def retrieve_similar(text: str, k: int = 5) -> List[Tuple[int, float, str]]:
 
 def save_to_file(file_path: str):
     """Save the FAISS index to a file."""
-    print(f"Saving FAISS index to {file_path}...")
-    print(f"ntotal: {_faiss_index.ntotal}, dim: {_faiss_index.d}")
+    logger.info("Saving FAISS index to %s...", file_path)
+    logger.debug("ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
     faiss.write_index(_faiss_index, file_path)
 
 def load_from_file(file_path: str):
     """Load the FAISS index from a file."""
     global _faiss_index, _text_store
-    print(f"Loading FAISS index from {file_path}...")
+    logger.info("Loading FAISS index from %s...", file_path)
     _faiss_index = faiss.read_index(file_path)
-    print(f"ntotal: {_faiss_index.ntotal}, dim: {_faiss_index.d}")
+    logger.debug("ntotal: %d, dim: %d", _faiss_index.ntotal, _faiss_index.d)
 
 def get_labels() -> List[str]:
     """Return the list of texts currently stored in the FAISS index."""

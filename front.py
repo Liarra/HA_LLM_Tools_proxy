@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os as _os
 from pathlib import Path as _Path
 
@@ -25,6 +26,16 @@ from count_tokens.count import count_tokens_in_string
 from tools_storage import dump_tools_into_storage, get_n_most_relevant_tools, load_tools, save_tools
 
 dotenv.load_dotenv()
+
+# Configure logging only if not already configured
+if not logging.getLogger().handlers:
+    log_level = _os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+logger = logging.getLogger(__name__)
+
 _TOOLS_TO_KEEP=int(_os.getenv("TOOLS_TO_KEEP", "3"))
 
 # Directory in which to store request logs (created automatically)
@@ -113,13 +124,13 @@ def add_tools_to_request(request_body: dict, tools: list) -> dict:
 
 def print_stats(message_body:dict):
     """Print statistics about the request body."""
-    print("-"*10)
-    print("Tokens in System message:", count_tokens(get_system_message(message_body)))
-    print("Tokens in User message:", count_tokens(get_user_message(message_body)))
+    logger.debug("-"*10)
+    logger.debug("Tokens in System message: %d", count_tokens(get_system_message(message_body)))
+    logger.debug("Tokens in User message: %d", count_tokens(get_user_message(message_body)))
     tools_dict = get_list_of_tools(message_body)
     tools_str = str(tools_dict)
-    print("Tokens in Tools:", count_tokens(tools_str))
-    print("-"*10)
+    logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
+    logger.debug("-"*10)
 
 def add_descriptions_if_missing(tools: list) -> list:
     """Add descriptions to tools if they are missing."""
@@ -141,13 +152,13 @@ def optimise_tools(message_body: dict) -> dict:
         # If the user request is too short, try to prepend the last assistant message for context
         last_assistant_message = get_last_assistant_message(new_body)
         if last_assistant_message is not None and len(last_assistant_message) > 0:
-            print("User request is too short, prepending last assistant message for context.")
+            logger.info("User request is too short, prepending last assistant message for context.")
             user_request=last_assistant_message+" ... " +user_request
 
     new_tools = get_n_most_relevant_tools(user_request, n=_TOOLS_TO_KEEP)
     new_tools_openai_format=add_descriptions_if_missing(new_tools)
 
-    print("Tokens in new Tools:", count_tokens(str(new_tools_openai_format)))
+    logger.debug("Tokens in new Tools: %d", count_tokens(str(new_tools_openai_format)))
 
     new_body = add_tools_to_request(new_body, new_tools_openai_format)
     return new_body
@@ -177,13 +188,13 @@ def forward_request_to(request_body: dict, url: str, api_key: str, stream: bool 
 @app.on_event("startup")
 async def _on_startup():
     if _STORAGE_DB.exists():
-        print(f"Loading tools storage from {_STORAGE_DB}")
+        logger.info("Loading tools storage from %s", _STORAGE_DB)
         load_tools(str(_STORAGE_DB))
 
 
 @app.on_event("shutdown")
 async def _on_shutdown():
-    print(f"Saving tools storage to {_STORAGE_DB}")
+    logger.info("Saving tools storage to %s", _STORAGE_DB)
     save_tools(str(_STORAGE_DB))
 
 
@@ -196,9 +207,9 @@ async def chat_completions(request: Request):
 
     # ---- Print User Message ----
     user_message = get_user_message(body)
-    print("-"*10)
-    print(f"User message: {user_message}")
-    print("-"*10)
+    logger.debug("-"*10)
+    logger.debug("User message: %s", user_message)
+    logger.debug("-"*10)
 
     # ---- Print messages stats ----
     print_stats(body)

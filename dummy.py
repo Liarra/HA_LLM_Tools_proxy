@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import json as _json
+import logging
 import os as _os
 import uuid as _uuid
 from pathlib import Path as _Path
@@ -21,6 +22,15 @@ from fastapi.responses import JSONResponse
 from count_tokens.count import count_tokens_in_string
 
 from tools_storage import get_3_random_tools, dump_tools_into_storage
+
+# Configure logging only if not already configured
+if not logging.getLogger().handlers:
+    log_level = _os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+logger = logging.getLogger(__name__)
 
 # Directory in which to store request logs (created automatically)
 _LOG_DIR = _Path("logs_dest")
@@ -96,19 +106,19 @@ async def chat_completions(request: Request):
 
     # ---- Print User Message ----
     user_message = get_user_message(body)
-    print("-"*10)
-    print(f"User message: {user_message}")
-    print("-"*10)
+    logger.debug("-"*10)
+    logger.debug("User message: %s", user_message)
+    logger.debug("-"*10)
 
     # ---- Print messages stats ----
     system_message = get_system_message(body)
     tools_dict = get_list_of_tools(body)
     tools_str = json.dumps(tools_dict)
 
-    print("Tokens in System message:", count_tokens(system_message))
-    print("Tokens in User message:", count_tokens(user_message))
-    print("Tokens in Tools:", count_tokens(tools_str))
-    print("-"*10)
+    logger.debug("Tokens in System message: %d", count_tokens(system_message))
+    logger.debug("Tokens in User message: %d", count_tokens(user_message))
+    logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
+    logger.debug("-"*10)
 
     # ---- Logging ----
     filename = f"{model}_{_current_timestamp()}.txt"

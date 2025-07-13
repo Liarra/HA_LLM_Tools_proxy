@@ -1,9 +1,20 @@
 """Read, write and find tools in the storage."""
 import json
+import logging
+import os
 
 import embedding
 import sqlite3
 import hashlib
+
+# Configure logging only if not already configured
+if not logging.getLogger().handlers:
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+logger = logging.getLogger(__name__)
 
 def crude_hash(s: str) -> int:
     """Return a crude hash of the string."""
@@ -34,7 +45,7 @@ def store_tool(tool: dict) -> None:
         raise ValueError("Tool must be a dictionary.")
 
     tool_label=get_tool_label(tool)
-    print (f"Storing tool: {tool_label}")
+    logger.debug("Storing tool: %s", tool_label)
     embedding.store_text_into_faiss(tool_label)
     h=crude_hash(tool_label)
     tool_definition_storage[h]=tool
@@ -73,7 +84,7 @@ def get_whitelisted_labels() -> list:
             label = get_tool_label_by_name(wt)
             ret.append(label)
         except ValueError as e:
-            print(f"Error getting label for whitelisted tool '{wt}': {e}")
+            logger.warning("Error getting label for whitelisted tool '%s': %s", wt, e)
             continue
     return ret
 
@@ -87,7 +98,7 @@ def get_blacklisted_labels() -> list:
             label = get_tool_label_by_name(bt)
             ret.append(label)
         except ValueError as e:
-            print(f"Error getting label for blacklisted tool '{bt}': {e}")
+            logger.warning("Error getting label for blacklisted tool '%s': %s", bt, e)
             continue
     return ret
 
@@ -103,26 +114,26 @@ def get_n_most_relevant_tools(request:str, n: int=3) -> list:
     number_of_tools_to_retrieve= n-len(whitelisted_tool_names) + len(blacklisted_tool_names)
 
     if number_of_tools_to_retrieve==0:
-        print("No more tools to retrieve, only whitelisted tools will be returned.")
+        logger.info("No more tools to retrieve, only whitelisted tools will be returned.")
 
     else:
         embedding_labels = embedding.retrieve_similar(request, k=number_of_tools_to_retrieve)
         blacklisted_labels = get_blacklisted_labels()
         for el in embedding_labels:
             if len(labels)==n:
-                print("Reached the limit of tools to return, stopping.")
+                logger.debug("Reached the limit of tools to return, stopping.")
                 break
             # If the label is blacklisted, skip it
             if el[2] in blacklisted_labels:
-                print(f"Skipping blacklisted tool: {el[2]}")
+                logger.warning("Skipping blacklisted tool: %s", el[2])
                 continue
             # If the label is already in the whitelisted tools, skip it
             if el[2] in labels:
-                print(f"Skipping already included tool: {el[2]}")
+                logger.debug("Skipping already included tool: %s", el[2])
                 continue
             # Otherwise, add the label to the list
             labels.append(el[2])
-            print(f"Tool {el[2]} with score {el[1]} was picked for this query")
+            logger.debug("Tool %s with score %f was picked for this query", el[2], el[1])
 
     # Return the tools corresponding to the labels
     tools = []
