@@ -103,8 +103,23 @@ def get_blacklisted_labels() -> list:
     return ret
 
 
-whitelisted_tool_names = ['GetLiveContext']
-blacklisted_tool_names = ['HassHumidifierMode', 'HassHumidifierSetPoint']
+# Get whitelisted and blacklisted tool names from environment variables
+# Default values maintain backward compatibility
+_default_whitelist = ['GetLiveContext']
+_default_blacklist = ['HassHumidifierMode', 'HassHumidifierSetPoint']
+
+def _parse_tool_names_from_env(env_var: str, default_list: list) -> list:
+    """Parse comma-separated tool names from environment variable."""
+    env_value = os.getenv(env_var, "")
+    if not env_value.strip():
+        return default_list
+    # Split by comma and strip whitespace from each tool name
+    parsed_list = [name.strip() for name in env_value.split(',') if name.strip()]
+    # If after parsing we have an empty list, fall back to defaults
+    return parsed_list if parsed_list else default_list
+
+whitelisted_tool_names = _parse_tool_names_from_env('WHITELISTED_TOOLS', _default_whitelist)
+blacklisted_tool_names = _parse_tool_names_from_env('BLACKLISTED_TOOLS', _default_blacklist)
 def get_n_most_relevant_tools(request:str, n: int=3) -> list:
     """Get n most relevant tools from the storage."""
     labels=get_whitelisted_labels()

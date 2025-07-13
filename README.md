@@ -28,6 +28,9 @@ This is probably the easiest way to run this proxy server.
     OPENAI_API_KEY=your-api-key
     OPENAI_API_URL=your-llm-endpoint/v1
     TOOLS_TO_KEEP=3 # Or however many tools you want to keep in the request
+    # Optional: Configure tool whitelisting/blacklisting (comma-separated)
+    # WHITELISTED_TOOLS=GetLiveContext,OtherTool
+    # BLACKLISTED_TOOLS=HassHumidifierMode,HassHumidifierSetPoint,AnotherTool
     ```
 3. **Run the Docker container**:
    ```bash
@@ -54,6 +57,21 @@ for example. `http://localhost:8000/v1/, or wherever you are running the proxy s
 The proxy will receive the requests to the `/v1/chat/completions` endpoint and pass them unchanged,
 except for only selecting the subset of the tools. It will then pass the response from the LLM back to HomeAssistant 
 unchanged.
+
+## Tool Configuration
+
+You can configure which tools are always included (whitelisted) or always excluded (blacklisted) using environment variables:
+
+- **`WHITELISTED_TOOLS`**: Comma-separated list of tool names that should always be included in every request, regardless of relevance. Default: `GetLiveContext`
+- **`BLACKLISTED_TOOLS`**: Comma-separated list of tool names that should never be included in requests. Default: `HassHumidifierMode,HassHumidifierSetPoint`
+
+Example configuration:
+```bash
+WHITELISTED_TOOLS=GetLiveContext,AlwaysIncludeTool
+BLACKLISTED_TOOLS=ProblematicTool,AnotherBadTool,UnwantedTool
+```
+
+If not set, the defaults ensure backward compatibility with the previous hardcoded behavior.
 
 ## Current Limitations
 
