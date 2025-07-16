@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY front.py .
 COPY embedding.py .
 COPY tools_storage.py .
+COPY smart_tokenizer.py .
 
 # Create logs directory
 RUN mkdir -p /app/logs
