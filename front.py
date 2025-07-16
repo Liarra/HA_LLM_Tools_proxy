@@ -21,8 +21,7 @@ import dotenv
 import httpx
 import uvicorn
 
-from transformers import AutoTokenizer
-
+from smart_tokenizer import SmartTokenizer
 from tools_storage import dump_tools_into_storage, get_n_most_relevant_tools, load_tools, save_tools
 
 dotenv.load_dotenv()
@@ -46,7 +45,7 @@ _LOG_DIR.mkdir(exist_ok=True)
 
 _STORAGE_DB = _Path("data/tools_storage.sqlite3")
 
-tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer = SmartTokenizer()
 
 app = FastAPI(title="Minimal OpenAI‑like API")
 
@@ -54,9 +53,9 @@ def _current_timestamp() -> str:
     """Return an ISO‑like timestamp safe for filenames (UTC)."""
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-def count_tokens(text: str) -> int:
+def count_tokens(text: str, model:str) -> int:
     """Count the number of tokens in a text string."""
-    return len(tokenizer.encode(text))
+    return tokenizer.count_tokens(text, model)
 
 def get_list_of_tools(request_body: dict) -> list:
     """Extract the list of tools from the request body."""
@@ -125,11 +124,12 @@ def add_tools_to_request(request_body: dict, tools: list) -> dict:
 
 def print_stats(message_body:dict):
     """Print statistics about the request body."""
-    logger.debug("Tokens in System message: %d", count_tokens(get_system_message(message_body)))
-    logger.debug("Tokens in User message: %d", count_tokens(get_user_message(message_body)))
+    model_name=message_body.get("model")
+    logger.debug("Tokens in System message: %d", count_tokens(get_system_message(message_body), model_name))
+    logger.debug("Tokens in User message: %d", count_tokens(get_user_message(message_body), model_name))
     tools_dict = get_list_of_tools(message_body)
     tools_str = str(tools_dict)
-    logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
+    logger.debug("Tokens in Tools: %d", count_tokens(tools_str, model_name))
 
 def add_descriptions_if_missing(tools: list) -> list:
     """Add descriptions to tools if they are missing."""
@@ -145,6 +145,7 @@ def optimise_tools(message_body: dict) -> dict:
     new_body = strip_tools_from_request(message_body)
 
     user_request=get_user_message(new_body)
+    model_name=message_body.get('model')
 
     words_user_request = len(user_request.split())
     if words_user_request < 4:
@@ -157,7 +158,7 @@ def optimise_tools(message_body: dict) -> dict:
     new_tools = get_n_most_relevant_tools(user_request, n=_TOOLS_TO_KEEP)
     new_tools_openai_format=add_descriptions_if_missing(new_tools)
 
-    logger.debug("Tokens in new Tools: %d", count_tokens(str(new_tools_openai_format)))
+    logger.debug("Tokens in new Tools: %d", count_tokens(str(new_tools_openai_format), model_name))
 
     new_body = add_tools_to_request(new_body, new_tools_openai_format)
     return new_body
