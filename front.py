@@ -21,7 +21,7 @@ import dotenv
 import httpx
 import uvicorn
 
-from count_tokens.count import count_tokens_in_string
+from transformers import AutoTokenizer
 
 from tools_storage import dump_tools_into_storage, get_n_most_relevant_tools, load_tools, save_tools
 
@@ -46,6 +46,8 @@ _LOG_DIR.mkdir(exist_ok=True)
 
 _STORAGE_DB = _Path("data/tools_storage.sqlite3")
 
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
 app = FastAPI(title="Minimal OpenAI‑like API")
 
 def _current_timestamp() -> str:
@@ -54,8 +56,7 @@ def _current_timestamp() -> str:
 
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string."""
-    """Count the number of tokens in a text string."""
-    return count_tokens_in_string(text)
+    return len(tokenizer.encode(text))
 
 def get_list_of_tools(request_body: dict) -> list:
     """Extract the list of tools from the request body."""

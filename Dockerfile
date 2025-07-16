@@ -2,14 +2,6 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install Rust compiler for tiktoken
-RUN apt-get update && apt-get install -y build-essential curl
-
-RUN apt-get update
-# Get Rust
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip

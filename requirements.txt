@@ -1,6 +1,5 @@
 uvicorn==0.35.0
 fastapi~=0.115.14
-count-tokens
 numpy~=2.3.1
 
 --extra-index-url https://download.pytorch.org/whl/cpu
