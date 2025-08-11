@@ -113,10 +113,6 @@ async def chat_completions(request: Request):
     tools_dict = get_list_of_tools(body)
     tools_str = json.dumps(tools_dict)
 
-    logger.debug("Tokens in System message: %d", count_tokens(system_message))
-    logger.debug("Tokens in User message: %d", count_tokens(user_message))
-    logger.debug("Tokens in Tools: %d", count_tokens(tools_str))
-
     # ---- Logging ----
     filename = f"{model}_{_current_timestamp()}.txt"
     log_path = _LOG_DIR / filename

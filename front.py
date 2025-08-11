@@ -67,8 +67,6 @@ def get_list_of_tools(request_body: dict) -> list:
 def get_user_message(request_body: dict) -> str:
     """Extract the user message from the request body."""
     messages = request_body.get("messages", [])
-    if not isinstance(messages, list):
-        raise ValueError("Messages should be a list.")
 
     last_message=None
     for message in messages:
@@ -76,7 +74,14 @@ def get_user_message(request_body: dict) -> str:
             last_message=message
 
     if last_message is not None:
-        return last_message["content"]
+        last_message_content = last_message["content"]
+        if isinstance(last_message_content, str):
+            return last_message_content
+        elif isinstance(last_message_content, list):
+            # If the content is a list, join it into a single string
+            return " ".join(str(item) for item in last_message_content)
+        else:
+            raise ValueError("User message content is weird")
 
     raise ValueError("No user message found in the request body.")
 
@@ -173,11 +178,9 @@ def forward_request_to(request_body: dict, url: str, api_key: str, stream: bool 
     }
 
     if stream:
-        with httpx.stream("POST", url, json=request_body, headers=headers) as response:
-            if response.status_code != 200:
-                raise ValueError(f"Failed to forward request: {response.status_code} {response.text}")
-            # Return the streaming response directly
-            return response
+        response = httpx.stream("POST", url, json=request_body, headers=headers)
+        # Return the streaming response directly
+        return response
     else:
         response = httpx.post(url, json=request_body, headers=headers)
         if response.status_code != 200:
@@ -234,11 +237,14 @@ async def chat_completions(request: Request):
         # Handle streaming response
         from fastapi.responses import StreamingResponse
 
-        response = forward_request_to(new_body, openai_api_url, openai_api_key, stream=True)
+        stream_context = forward_request_to(new_body, openai_api_url, openai_api_key, stream=True)
 
-        async def response_generator():
-            async for chunk in response.aiter_bytes():
-                yield chunk
+        def response_generator():
+            with stream_context as response:
+                if response.status_code != 200:
+                    raise ValueError(f"Failed to forward request: {response.status_code}")
+                for chunk in response.iter_bytes():
+                    yield chunk
 
         return StreamingResponse(
             response_generator(),
