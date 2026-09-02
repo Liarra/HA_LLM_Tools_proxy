@@ -68,7 +68,7 @@ async def _custom_conversation_request(base_url: str, release: Event):
         stream=True,
         stream_options={"include_usage": True},
     )
-    first_chunk = await anext(stream)
+    first_chunk = await stream.__anext__()
     release.set()
     chunks = [first_chunk, *[chunk async for chunk in stream]]
     return chunks
