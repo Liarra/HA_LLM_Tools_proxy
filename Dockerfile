@@ -9,10 +9,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all necessary project files
 COPY front.py .
+COPY diagnostics.py .
 COPY embedding.py .
+COPY smart_tokenizer.py .
 COPY tools_storage.py .
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data /app/logs
 
 # Set environment variables
 ENV OPENAI_API_KEY=your_openai_api_key_here

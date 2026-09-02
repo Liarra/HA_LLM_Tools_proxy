@@ -28,6 +28,18 @@ class StubSelector:
         return Selection(self.selected, {"SelectedTool": 0.9})
 
 
+class StubDiagnostics:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.received = None
+        self.forwarded = None
+
+    def record(self, received, forwarded) -> None:
+        self.received = received
+        self.forwarded = forwarded
+
+
 class AsyncBytes(httpx.AsyncByteStream):
     def __init__(self, *chunks: bytes) -> None:
         self.chunks = chunks
@@ -128,6 +140,33 @@ def test_zero_selected_tools_are_omitted_from_upstream_request() -> None:
     assert response.status_code == 200
     assert "tools" not in seen
     assert seen["tool_choice"] == "none"
+
+
+def test_debug_diagnostics_receive_before_and_after_bodies() -> None:
+    selected = tool("SelectedTool")
+    diagnostics = StubDiagnostics()
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    app = create_app(
+        config=config(),
+        selector=StubSelector([selected]),  # type: ignore[arg-type]
+        diagnostics=diagnostics,  # type: ignore[arg-type]
+        transport=httpx.MockTransport(upstream),
+    )
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3",
+                "messages": [{"role": "user", "content": "turn on the light"}],
+                "tools": [selected, tool("OtherTool")],
+            },
+        )
+
+    assert len(diagnostics.received["tools"]) == 2
+    assert diagnostics.forwarded["tools"] == [selected]
 
 
 def test_sse_stream_is_forwarded_from_correct_endpoint() -> None:

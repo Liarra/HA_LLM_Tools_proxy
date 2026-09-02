@@ -49,6 +49,9 @@ docker run -d \
   ha-llm-tools-proxy
 ```
 
+When using debug request logs, also mount them if you want them to survive a
+container replacement: `-v ./logs:/app/logs`.
+
 Point Home Assistant or Custom Conversation at
 `http://proxy-host:8000/v1`. The proxy forwards from there to
 `OPENAI_API_URL`.
@@ -94,9 +97,39 @@ on the first request that needs semantic selection.
 | `EMBEDDING_MODEL` | `intfloat/e5-small-v2` | Hugging Face embedding model |
 | `EMBEDDING_CACHE` | `data/tool_embeddings.sqlite3` | SQLite cache path |
 | `LOG_LEVEL` | `INFO` | Python log level |
+| `DEBUG_LOG_DIR` | `logs` | Request-diagnostics directory used only at debug level |
+| `TOKENIZER_MODEL` | inferred | Tokenizer repository used for debug token counts |
 
 Set either comma-separated tool list explicitly to an empty value to disable
 that list, for example `WHITELISTED_TOOLS=`.
+
+## Debug request and token diagnostics
+
+Set `LOG_LEVEL=DEBUG` to write one structured JSON file per Chat Completions
+request. Each file contains:
+
+- the body received from Home Assistant;
+- the body forwarded to the model server;
+- system, user, all-message, tool, and whole-request token counts for both;
+- the estimated number of request tokens removed by filtering.
+
+The tokenizer loads lazily on the first debug request. For a served model alias
+such as `qwen3`, set the actual tokenizer explicitly for the best count:
+
+```dotenv
+LOG_LEVEL=DEBUG
+TOKENIZER_MODEL=btbtyler09/Qwen3.8-27B-GPTQ-4bit
+DEBUG_LOG_DIR=logs
+```
+
+If the tokenizer cannot be loaded, diagnostics fall back to a clearly marked
+four-characters-per-token estimate rather than breaking the proxy. These counts
+measure the serialized OpenAI request components; the model server's final chat
+template may add a small number of tokens.
+
+Debug files contain complete prompts, tool schemas, and conversation history.
+Do not enable them casually on a shared machine, and do not publish the `logs`
+directory.
 
 To tune the threshold, run representative HA phrases at `LOG_LEVEL=DEBUG` and
 inspect the selected semantic scores. Raise the threshold to reduce prompt

@@ -18,7 +18,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from diagnostics import DebugDiagnostics
 from embedding import SemanticEmbedder
+from smart_tokenizer import SmartTokenizer
 from tools_storage import Selection, ToolSelector, tool_name
 
 dotenv.load_dotenv()
@@ -63,6 +65,9 @@ class AppConfig:
     )
     embedding_model: str = "intfloat/e5-small-v2"
     embedding_cache: Path = Path("data/tool_embeddings.sqlite3")
+    debug_diagnostics: bool = False
+    debug_log_dir: Path = Path("logs")
+    tokenizer_model: str = ""
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -83,6 +88,9 @@ class AppConfig:
             embedding_cache=Path(
                 os.getenv("EMBEDDING_CACHE", "data/tool_embeddings.sqlite3")
             ),
+            debug_diagnostics=os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG",
+            debug_log_dir=Path(os.getenv("DEBUG_LOG_DIR", "logs")),
+            tokenizer_model=os.getenv("TOKENIZER_MODEL", ""),
         )
 
 
@@ -164,6 +172,7 @@ def create_app(
     *,
     config: AppConfig | None = None,
     selector: ToolSelector | None = None,
+    diagnostics: DebugDiagnostics | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     """Build the proxy application; dependency arguments make it testable."""
@@ -175,6 +184,11 @@ def create_app(
         blacklisted_names=config.blacklisted_tools,
         embedder=SemanticEmbedder(config.embedding_model),
         cache_path=config.embedding_cache,
+    )
+    diagnostics = diagnostics or DebugDiagnostics(
+        enabled=config.debug_diagnostics,
+        log_dir=config.debug_log_dir,
+        counter=SmartTokenizer(config.tokenizer_model),
     )
 
     @asynccontextmanager
@@ -205,6 +219,7 @@ def create_app(
             except json.JSONDecodeError:
                 return JSONResponse({"detail": "Request body must be valid JSON"}, 400)
 
+            received_body = dict(body)
             stream = body.get("stream") is True
             tools = body.get("tools")
             if isinstance(tools, list) and tools:
@@ -234,6 +249,11 @@ def create_app(
                     logger.exception(
                         "Tool selection failed; forwarding all request tools"
                     )
+            if diagnostics.enabled:
+                try:
+                    await asyncio.to_thread(diagnostics.record, received_body, body)
+                except Exception:
+                    logger.exception("Debug diagnostics failed; forwarding the request")
             raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
         query = request.url.query
