@@ -1,254 +1,245 @@
-"""Read, write and find tools in the storage."""
+"""Select relevant tools from the tools present in the current request."""
+
+from __future__ import annotations
+
+import hashlib
 import json
 import logging
-import os
-
-import embedding
 import sqlite3
-import hashlib
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Lock
+from typing import Protocol
 
-# Configure logging only if not already configured
-if not logging.getLogger().handlers:
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+import numpy as np
+
+from embedding import SemanticEmbedder
+
 logger = logging.getLogger(__name__)
 
-def crude_hash(s: str) -> int:
-    """Return a crude hash of the string."""
-    return int(hashlib.md5(s.encode('utf-8')).hexdigest()[:10], 16)
+
+class Embedder(Protocol):
+    """Small protocol that keeps the selector straightforward to test."""
+
+    model_name: str
+
+    def encode_query(self, text: str) -> np.ndarray: ...
+
+    def encode_passages(self, texts: Sequence[str]) -> np.ndarray: ...
 
 
-def get_tool_label(tool: dict) -> str:
-    """Encode a tool dictionary into a string."""
-    tool_name= tool.get("function", {}).get("name", "")
-    tool_description = tool.get("function", {}).get("description", "")
-    return f"{tool_name}:{tool_description}"
+@dataclass(frozen=True)
+class Selection:
+    """Selected tool definitions and semantic scores by tool name."""
 
-def get_tool_label_by_name(tool_name:str) -> str:
-    """Get the tool label by its name. Assumes every tool has a unique name."""
-    if not isinstance(tool_name, str):
-        raise ValueError("Tool name must be a string.")
-    # Find the tool in the storage by its name
-    for tool in tool_definition_storage.values():
-        if tool.get("function", {}).get("name") == tool_name:
-            return get_tool_label(tool)
-    raise ValueError(f"Tool with name '{tool_name}' not found in storage.")
+    tools: list[dict]
+    scores: dict[str, float]
 
 
-tool_definition_storage=dict()
-def store_tool(tool: dict) -> None:
-    """Store a tool in the memory pseudo-storage."""
-    if not isinstance(tool, dict):
-        raise ValueError("Tool must be a dictionary.")
+class EmbeddingCache:
+    """Persist embeddings atomically in one SQLite database."""
 
-    tool_label=get_tool_label(tool)
-    logger.debug("Storing tool: %s", tool_label)
-    embedding.store_text_into_faiss(tool_label)
-    h=crude_hash(tool_label)
-    tool_definition_storage[h]=tool
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tool_embeddings (
+                        cache_key TEXT PRIMARY KEY,
+                        vector BLOB NOT NULL
+                    )
+                    """
+                )
 
-def exists_in_storage(tool: dict) -> bool:
-    """Check if a tool exists in the storage."""
-    if not isinstance(tool, dict):
-        raise ValueError("Tool must be a dictionary.")
-    encoded_tool = get_tool_label(tool)
-    return crude_hash(encoded_tool) in tool_definition_storage.keys()
+    def get(self, cache_key: str) -> np.ndarray | None:
+        if self.path is None:
+            return None
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT vector FROM tool_embeddings WHERE cache_key = ?", (cache_key,)
+            ).fetchone()
+        if row is None:
+            return None
+        return np.frombuffer(row[0], dtype="float32").copy()
 
-def dump_tools_into_storage(tools: list) -> None:
-    """Adds any new tools to the storage."""
-    if not isinstance(tools, list):
-        raise ValueError("Tools must be a list.")
-    for tool in tools:
-        if not isinstance(tool, dict):
-            raise ValueError("Each tool must be a dictionary.")
-        if not exists_in_storage(tool):
-            store_tool(tool)
-
-def get_3_random_tools() -> list:
-    """Get 3 random tools from the storage."""
-    if len(tool_definition_storage) < 3:
-        return list(tool_definition_storage.values())
-    import random
-    return random.sample(list(tool_definition_storage.values()), 3)
-
-def get_whitelisted_labels() -> list:
-    """Get the labels of the whitelisted tools."""
-    ret= []
-    for wt in whitelisted_tool_names:
-        if not isinstance(wt, str):
-            raise ValueError("Whitelisted tool names must be strings.")
-        try:
-            label = get_tool_label_by_name(wt)
-            ret.append(label)
-        except ValueError as e:
-            logger.warning("Error getting label for whitelisted tool '%s': %s", wt, e)
-            continue
-    return ret
-
-def get_blacklisted_labels() -> list:
-    """Get the labels of the blacklisted tools."""
-    ret= []
-    for bt in blacklisted_tool_names:
-        if not isinstance(bt, str):
-            raise ValueError("Blacklisted tool names must be strings.")
-        try:
-            label = get_tool_label_by_name(bt)
-            ret.append(label)
-        except ValueError as e:
-            logger.warning("Error getting label for blacklisted tool '%s': %s", bt, e)
-            continue
-    return ret
+    def put(self, cache_key: str, vector: np.ndarray) -> None:
+        if self.path is None:
+            return
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO tool_embeddings(cache_key, vector) VALUES (?, ?)",
+                (cache_key, vector.astype("float32").tobytes()),
+            )
 
 
-def _parse_tool_names_from_env(env_var: str, default_list=None) -> list:
-    """Parse comma-separated tool names from environment variable."""
-    if default_list is None:
-        default_list = []
-    env_value = os.getenv(env_var, "")
-    if not env_value.strip():
-        return default_list
-    # Split by comma and strip whitespace from each tool name
-    parsed_list = [name.strip() for name in env_value.split(',') if name.strip()]
-    # If after parsing we have an empty list, fall back to defaults
-    return parsed_list if parsed_list else default_list
-
-whitelisted_tool_names = _parse_tool_names_from_env('WHITELISTED_TOOLS')
-blacklisted_tool_names = _parse_tool_names_from_env('BLACKLISTED_TOOLS')
-def get_n_most_relevant_tools(request:str, n: int=3) -> list:
-    """Get n most relevant tools from the storage."""
-    logger.info("Selecting %d most relevant tools for the request", n)
-    logger.debug(f"Will always include whitelisted tools: {whitelisted_tool_names}")
-    logger.debug(f"Will always exclude blacklisted tools: {blacklisted_tool_names}")
-
-    # Pre-populate the labels with whitelisted tools
-    labels=get_whitelisted_labels()
-
-    # Increase the number of tools to retrieve to be able to remove the blacklisted tools if they are present
-    # in the results. Whitelisted tools may appear in the results, so no need to account for them.
-    number_of_tools_to_retrieve= n+len(blacklisted_tool_names)
-
-    if n<=len(labels):
-        logger.warning("Number of tools to pick is less than the number of whitelisted tools - only whitelisted tools will be returned.")
-
-    else:
-        embedding_labels = embedding.retrieve_similar(request, k=number_of_tools_to_retrieve)
-        blacklisted_labels = get_blacklisted_labels()
-        for el in embedding_labels:
-            if len(labels)==n:
-                logger.debug("Reached the limit of tools to return, stopping.")
-                break
-            # If the label is blacklisted, skip it
-            if el[2] in blacklisted_labels:
-                logger.debug("Skipping blacklisted tool: %s", el[2])
-                continue
-            # If the label is already in the whitelisted tools, skip it
-            if el[2] in labels:
-                logger.debug("Skipping already included tool: %s", el[2])
-                continue
-            # Otherwise, add the label to the list
-            labels.append(el[2])
-            logger.debug("Tool %s with score %f was picked for this query", el[2], el[1])
-
-    # Return the tools corresponding to the labels
-    tools = []
-    for label in labels:
-        h = crude_hash(label)
-        if h in tool_definition_storage:
-            tools.append(tool_definition_storage[h])
-
-    logger.info(f"Returning {len(tools)} tools")
-    return tools
-
-def save_tools(sqlite_file_path: str) -> None:
-    """Save the tools to a SQLite database."""
-    conn = sqlite3.connect(sqlite_file_path)
-    cursor = conn.cursor()
-
-    # Create table if it doesn't exist
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tools (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hash INTEGER UNIQUE,
-            tool_name TEXT,
-            tool_description TEXT,
-            tool_data TEXT
-        );''')
-
-    cursor.execute(''' 
-        CREATE TABLE IF NOT EXISTS embedding (
-            id   INTEGER PRIMARY KEY CHECK (id = 1),
-            file_path TEXT NOT NULL
-        );''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS embeddings_labels (
-            id   INTEGER PRIMARY KEY,
-            text TEXT NOT NULL
-        );
-    ''')
-
-    # Insert tools into the table
-    cursor.execute('DELETE FROM tools')  # Clear existing tools
-    for h, tool in tool_definition_storage.items():
-        tool_name = tool.get("function", {}).get("name", "")
-        tool_description = tool.get("function", {}).get("description", "")
-        tool_data = json.dumps(tool)  # Convert dict to string for storage
-        cursor.execute('''
-            INSERT INTO tools (hash, tool_name, tool_description, tool_data)
-            VALUES (?, ?, ?, ?)
-        ''', (h, tool_name, tool_description, tool_data))
-
-    # Save embeddings
-    embedding.save_to_file('data/embedding.bin')
-    cursor.execute('''
-        INSERT OR REPLACE INTO embedding (id, file_path) VALUES (?, ?)
-    ''', (1, 'data/embedding.bin'))
-
-    # Save labels
-    labels = embedding.get_labels()
-    cursor.execute('DELETE FROM embeddings_labels')  # Clear existing labels
-    for idx, label in enumerate(labels):
-        cursor.execute('''
-            INSERT INTO embeddings_labels (id, text) VALUES (?, ?)
-        ''', (idx, label))
-
-    conn.commit()
-    conn.close()
+def tool_name(tool: dict) -> str:
+    """Return an OpenAI function tool's name, or an empty string."""
+    return str(tool.get("function", {}).get("name", ""))
 
 
-def load_tools(sqlite_file_path: str) -> None:
-    """Load tools from a SQLite database into the storage."""
-    conn = sqlite3.connect(sqlite_file_path)
-    cursor = conn.cursor()
+def _canonical_tool(tool: dict) -> str:
+    return json.dumps(tool, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    # Fetch all tools from the table
-    cursor.execute('SELECT hash, tool_name, tool_description, tool_data FROM tools')
-    rows = cursor.fetchall()
 
-    for h, tool_name, tool_description, tool_data in rows:
-        tool = {
-            "function": {
-                "name": tool_name,
-                "description": tool_description
-            }
-        }
-        # Convert string back to dict if necessary
-        if isinstance(tool_data, str):
-            tool.update(json.loads(tool_data))
-        tool_definition_storage[h] = tool
+def _tool_text(tool: dict) -> str:
+    function = tool.get("function", {})
+    return "\n".join(
+        (
+            f"Function name: {function.get('name', '')}",
+            f"Description: {function.get('description', '')}",
+            "Parameters: "
+            + json.dumps(
+                function.get("parameters", {}),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    )
 
-    # Load embeddings
-    embed_filepath = cursor.execute('SELECT file_path FROM embedding WHERE id = 1').fetchone()
-    if embed_filepath:
-        embedding.load_from_file(embed_filepath[0])
 
-    # Load labels
-    cursor.execute('SELECT text FROM embeddings_labels')
-    rows = cursor.fetchall()
-    labels = [row[0] for row in rows]
-    embedding.load_labels(labels)
+class ToolSelector:
+    """Apply mandatory names, a similarity floor, and a hard tool budget."""
 
-    conn.close()
+    def __init__(
+        self,
+        *,
+        max_tools: int = 3,
+        min_similarity: float = 0.75,
+        whitelisted_names: Sequence[str] = ("GetLiveContext",),
+        blacklisted_names: Sequence[str] = (
+            "HassHumidifierMode",
+            "HassHumidifierSetPoint",
+        ),
+        embedder: Embedder | None = None,
+        cache_path: Path | None = Path("data/tool_embeddings.sqlite3"),
+    ) -> None:
+        if max_tools < 0:
+            raise ValueError("max_tools must be zero or greater")
+        if not -1.0 <= min_similarity <= 1.0:
+            raise ValueError("min_similarity must be between -1 and 1")
+        self.max_tools = max_tools
+        self.min_similarity = min_similarity
+        self.whitelisted_names = tuple(whitelisted_names)
+        self.blacklisted_names = frozenset(blacklisted_names)
+        self.embedder = embedder or SemanticEmbedder()
+        self.cache = EmbeddingCache(cache_path)
+        self._selection_lock = Lock()
+
+    def _cache_key(self, tool: dict) -> str:
+        value = f"{self.embedder.model_name}\0{_canonical_tool(tool)}"
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _tool_vectors(self, tools: Sequence[dict]) -> np.ndarray:
+        vectors: list[np.ndarray | None] = []
+        missing_positions: list[int] = []
+        missing_texts: list[str] = []
+
+        for position, tool in enumerate(tools):
+            cached = self.cache.get(self._cache_key(tool))
+            vectors.append(cached)
+            if cached is None:
+                missing_positions.append(position)
+                missing_texts.append(_tool_text(tool))
+
+        if missing_texts:
+            encoded = self.embedder.encode_passages(missing_texts)
+            for position, vector in zip(missing_positions, encoded, strict=True):
+                vectors[position] = vector
+                self.cache.put(self._cache_key(tools[position]), vector)
+
+        if not vectors:
+            return np.empty((0, 0), dtype="float32")
+        assert all(vector is not None for vector in vectors)
+        return np.stack(vectors)  # type: ignore[arg-type]
+
+    def select(
+        self,
+        tools: Sequence[dict],
+        query: str,
+        *,
+        required_names: Sequence[str] = (),
+        require_at_least_one: bool = False,
+    ) -> Selection:
+        """Select at most ``max_tools`` from only this request's tools.
+
+        Explicitly required tools take priority, followed by configured whitelist
+        entries. Both consume the same hard budget as semantic matches.
+        """
+        if self.max_tools == 0 or not tools:
+            return Selection([], {})
+
+        with self._selection_lock:
+            indexed = [
+                (position, tool, tool_name(tool)) for position, tool in enumerate(tools)
+            ]
+            mandatory_order = tuple(
+                dict.fromkeys((*required_names, *self.whitelisted_names))
+            )
+            available_names = {name for _, _, name in indexed}
+            available_mandatory = [
+                name for name in mandatory_order if name in available_names
+            ]
+            mandatory: list[dict] = []
+            used_names: set[str] = set()
+            for name in mandatory_order:
+                matching = next(
+                    (tool for _, tool, item_name in indexed if item_name == name), None
+                )
+                if matching is not None and name not in used_names:
+                    mandatory.append(matching)
+                    used_names.add(name)
+                if len(mandatory) == self.max_tools:
+                    break
+
+            if (
+                len(available_mandatory) > len(mandatory)
+                and len(mandatory) == self.max_tools
+            ):
+                logger.warning(
+                    "Mandatory tools exceed TOOLS_TO_KEEP; enforcing the hard maximum"
+                )
+
+            remaining = self.max_tools - len(mandatory)
+            if remaining == 0:
+                return Selection(mandatory, {})
+
+            candidates = [
+                tool
+                for _, tool, name in indexed
+                if name not in used_names and name not in self.blacklisted_names
+            ]
+            if not candidates:
+                return Selection(mandatory, {})
+
+            if not query.strip():
+                if require_at_least_one and not mandatory:
+                    return Selection([candidates[0]], {})
+                return Selection(mandatory, {})
+
+            query_vector = self.embedder.encode_query(query)
+            tool_vectors = self._tool_vectors(candidates)
+            similarities = tool_vectors @ query_vector
+            ranked = sorted(
+                zip(candidates, similarities, strict=True),
+                key=lambda item: float(item[1]),
+                reverse=True,
+            )
+
+            selected = list(mandatory)
+            scores: dict[str, float] = {}
+            for tool, raw_score in ranked:
+                score = float(raw_score)
+                if score < self.min_similarity and not (
+                    require_at_least_one and len(selected) == 0
+                ):
+                    continue
+                selected.append(tool)
+                scores[tool_name(tool)] = score
+                if len(selected) == self.max_tools:
+                    break
+
+            return Selection(selected, scores)
