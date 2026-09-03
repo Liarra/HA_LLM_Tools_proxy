@@ -1,114 +1,84 @@
-"""Smart tokenizer that auto-detects the best tokenizer based on model name."""
+"""Lazy tokenizer selection for debug-only token accounting."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
 import logging
-from typing import Optional
-from functools import lru_cache
+import math
+from threading import Lock
+
 from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
 
-# Cache tokenizers to avoid reloading them repeatedly
-@lru_cache(maxsize=2)
-def _get_cached_tokenizer(tokenizer_name: str):
-    """Get a cached tokenizer instance."""
-    try:
-        return AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
-    except Exception as e:
-        logger.warning(f"Failed to load tokenizer {tokenizer_name}: {e}")
-        logger.warning("Falling back to default tokenizer - GPT-2")
-        # Fallback to GPT-2 tokenizer
-        return AutoTokenizer.from_pretrained("gpt2")
-
-
-def detect_tokenizer_from_model(model_name: str) -> str:
-    """
-    Detect the appropriate tokenizer based on the model name.
-    Returns the HuggingFace model ID for the tokenizer.
-    """
-    model_lower = model_name.lower()
-
-    # OpenAI models
-    if any(x in model_lower for x in ['gpt-4', 'gpt-3.5', 'chatgpt']):
-        return "Xenova/gpt-4"  # or "gpt2" as fallback
-
-    # Anthropic Claude
-    elif 'claude' in model_lower:
-        return "gpt2"  # Claude uses similar tokenization
-
-    # Meta Llama models
-    elif any(x in model_lower for x in ['llama', 'code-llama', 'llama2', 'llama3']):
-        if 'llama-3' in model_lower or 'llama3' in model_lower:
-            return "meta-llama/Meta-Llama-3-8B"
-        elif 'llama-2' in model_lower or 'llama2' in model_lower:
-            return "meta-llama/Llama-2-7b-hf"
-        else:
-            return "meta-llama/Llama-2-7b-hf"
-
-    # Mistral models
-    elif any(x in model_lower for x in ['mistral', 'mixtral']):
-        return "mistralai/Mistral-7B-v0.1"
-
-    # Qwen models (you mentioned these in README)
-    elif 'qwen' in model_lower:
-        return "Qwen/Qwen-7B"
-
-    # DeepSeek models (also mentioned in README)
-    elif 'deepseek' in model_lower:
-        return "deepseek-ai/deepseek-coder-6.7b-base"
-
-    # Cohere Command models
-    elif 'command' in model_lower or 'cohere' in model_lower:
-        return "gpt2"  # Fallback
-
-    # Google models (Gemini, PaLM, etc.)
-    elif any(x in model_lower for x in ['gemini', 'palm', 'bard']):
-        return "gpt2"  # Fallback
-
-    # Default fallback - GPT-2 is widely compatible
-    else:
-        logger.info(f"Unknown model {model_name}, falling back to GPT-2 tokenizer")
-        return "gpt2"
-
-
 class SmartTokenizer:
-    """
-    A smart tokenizer that automatically selects the appropriate tokenizer
-    based on the model name from the OpenAI API request.
-    """
+    """Load a suitable tokenizer only when debug diagnostics request one."""
 
-    def __init__(self):
-        self.current_model = None
-        self.current_tokenizer = None
-        # Pre-load GPT-2 as default fallback
-        self.fallback_tokenizer = _get_cached_tokenizer("gpt2")
+    def __init__(self, tokenizer_model: str = "") -> None:
+        self.tokenizer_model = tokenizer_model.strip()
+        self._tokenizers: dict[str, object] = {}
+        self._failed: set[str] = set()
+        self._load_lock = Lock()
 
-    def update_model(self, model_name: str) -> None:
-        """Update the tokenizer if the model has changed."""
-        if self.current_model != model_name:
-            self.current_model = model_name
-            tokenizer_name = detect_tokenizer_from_model(model_name)
-            self.current_tokenizer = _get_cached_tokenizer(tokenizer_name)
-            logger.info(f"Switched to tokenizer for model: {model_name} -> {tokenizer_name}")
+    def resolve_model(self, request_model: str) -> str:
+        """Resolve a served model alias to a usable tokenizer repository."""
+        if self.tokenizer_model:
+            return self.tokenizer_model
+        if "/" in request_model:
+            return request_model
 
-    def count_tokens(self, text: str, model_name: Optional[str] = None) -> int:
+        model = request_model.lower()
+        if "qwen" in model or "deepseek" in model:
+            return "Qwen/Qwen3-8B"
+        if "phi" in model:
+            return "microsoft/Phi-3.5-mini-instruct"
+        return "openai-community/gpt2"
+
+    def _get_tokenizer(self, model_name: str):
+        if model_name in self._tokenizers:
+            return self._tokenizers[model_name]
+        if model_name in self._failed:
+            return None
+
+        with self._load_lock:
+            if model_name in self._tokenizers:
+                return self._tokenizers[model_name]
+            if model_name in self._failed:
+                return None
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+            except (OSError, ValueError):
+                logger.exception(
+                    "Could not load debug tokenizer %s; using a character estimate",
+                    model_name,
+                )
+                self._failed.add(model_name)
+                return None
+            self._tokenizers[model_name] = tokenizer
+            return tokenizer
+
+    def count_many(
+        self, texts: Mapping[str, str], request_model: str
+    ) -> tuple[dict[str, int], str, bool]:
+        """Count several strings with one tokenizer load.
+
+        Returns counts, the resolved tokenizer name, and whether the fallback
+        character estimate had to be used.
         """
-        Count tokens in text using the appropriate tokenizer.
-
-        Args:
-            text: Text to tokenize
-            model_name: Optional model name to auto-select tokenizer
-
-        Returns:
-            Number of tokens
-        """
-        if model_name:
-            self.update_model(model_name)
-
-        tokenizer = self.current_tokenizer or self.fallback_tokenizer
-
-        try:
-            return len(tokenizer.encode(text, add_special_tokens=True))
-        except Exception as e:
-            logger.warning(f"Tokenization failed: {e}, using fallback heuristic")
-            # Simple fallback estimation
-            return len(text) // 4 + text.count(' ') + 1
+        tokenizer_name = self.resolve_model(request_model)
+        tokenizer = self._get_tokenizer(tokenizer_name)
+        if tokenizer is None:
+            return (
+                {name: math.ceil(len(text) / 4) for name, text in texts.items()},
+                tokenizer_name,
+                True,
+            )
+        return (
+            {
+                name: len(tokenizer.encode(text, add_special_tokens=False))
+                for name, text in texts.items()
+            },
+            tokenizer_name,
+            False,
+        )

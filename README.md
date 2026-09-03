@@ -1,104 +1,164 @@
-# OpenAI API Proxy with Tool Optimization
+# Home Assistant LLM Tools Proxy
 
-**WARNING: This software is very much at the "proof of concept" stage and misses a lot of essential features. 
-It's not anywhere near production ready. Use at your own peril. MRs and suggestions are welcome.**
+An OpenAI-compatible reverse proxy that reduces Home Assistant tool-schema
+prompt bloat. It embeds the current user request and the tools supplied with
+that request, then forwards only the relevant subset to the upstream LLM.
 
-This is a proxy server that sits between your HomeAssistant LLM integration and the OpenAI-compatible API and automatically 
-debloats your requests to the OpenAI-compatible LLM.
+The proxy supports both ordinary and streamed Chat Completions responses. Other
+`/v1/*` routes, including `/v1/models`, are passed through transparently so
+clients such as Custom Conversation can treat it as the model server.
 
-The biggest source of prompt bloat in HomeAssistant LLM calls is the inclusion of all available tools in every request.
-This proxy server intercepts requests to the `/v1/chat/completions` endpoint, analyzes the last user message, and 
-selects only the most relevant tools to include with the request using an embedding model.
-Then the request is forwarded to the actual LLM API.
+> This remains a small self-hosted project. Keep it on a trusted network and do
+> not expose it directly to the internet.
 
-This provides faster response times, helps you to stay within your token budget, and reduces the energy burden 
-on the environment.
+## Docker setup
 
-## Setup
-
-### Docker
-This is probably the easiest way to run this proxy server.
-
-1. **Build the Docker image**:
-   ```bash
-   docker build -t openai-proxy .
-   ```
-2. **Create a `.env` file** in the same directory as your Dockerfile with the following content:
-   ```bash
-    OPENAI_API_KEY=your-api-key
-    OPENAI_API_URL=your-llm-endpoint/v1
-    TOOLS_TO_KEEP=3 # Or however many tools you want to keep in the request
-    # Optional: Configure tool whitelisting/blacklisting (comma-separated)
-    # WHITELISTED_TOOLS=GetLiveContext,OtherTool
-    # BLACKLISTED_TOOLS=HassHumidifierMode,HassHumidifierSetPoint,AnotherTool
-    ```
-3. **Run the Docker container**:
-   ```bash
-    docker run -d -p 8000:8000 -v ./data:data --env-file .env openai-proxy
-    ```
-   
-### Python Script
-If you prefer to run the proxy server as a Python script, just create the `.env` file as described above, install the 
-required dependencies from `requirements.txt`, and run the script:
+Build the image:
 
 ```bash
-python front.py
+docker build -t ha-llm-tools-proxy .
 ```
 
-## Usage
-Once the server is running, set it up as the endpoint for your HomeAssistant LLM integration.
-I use the amazing [OpenAI Compatible Conversation](https://github.com/michelle-avery/openai-compatible-conversation) 
-and its fork [No-think LLM](https://github.com/duckida/ha-nothink-llm) optimised for Qwen and DeepSeek output.
+Create `.env`:
 
-Set up your integration as usual, setting up the system prompt and all the model parameters. 
-The only difference is that you will set the API endpoint to the URL of this proxy server, 
-for example. `http://localhost:8000/v1/, or wherever you are running the proxy server.
+```dotenv
+OPENAI_API_KEY=your-upstream-key
+OPENAI_API_URL=http://your-vllm-host:8000/v1
 
-The proxy will receive the requests to the `/v1/chat/completions` endpoint and pass them unchanged,
-except for only selecting the subset of the tools. It will then pass the response from the LLM back to HomeAssistant 
-unchanged.
+# Hard ceiling, including whitelisted tools.
+TOOLS_TO_KEEP=3
 
-## Tool Configuration
+# Relevant tools below this cosine-similarity score are omitted. This means the
+# proxy may return fewer than TOOLS_TO_KEEP tools. E5 scores are model-specific;
+# 0.75 is a reasonable starting point, not a universal truth.
+MIN_TOOL_SIMILARITY=0.75
 
-You can configure which tools are always included (whitelisted) or always excluded (blacklisted) using environment variables:
+# Comma-separated tool names.
+WHITELISTED_TOOLS=GetLiveContext
+BLACKLISTED_TOOLS=HassHumidifierMode,HassHumidifierSetPoint
+```
 
-- **`WHITELISTED_TOOLS`**: Comma-separated list of tool names that should always be included in every request, regardless of relevance. Default: `GetLiveContext`
-- **`BLACKLISTED_TOOLS`**: Comma-separated list of tool names that should never be included in requests. Default: `HassHumidifierMode,HassHumidifierSetPoint`
+Run it:
 
-Example configuration:
 ```bash
-WHITELISTED_TOOLS=GetLiveContext,AlwaysIncludeTool
-BLACKLISTED_TOOLS=ProblematicTool,AnotherBadTool,UnwantedTool
+docker run -d \
+  --name ha-llm-tools-proxy \
+  -p 8000:8000 \
+  -v ./data:/app/data \
+  --env-file .env \
+  ha-llm-tools-proxy
 ```
 
-If not set, the defaults ensure backward compatibility with the previous hardcoded behavior.
+When using debug request logs, also mount them if you want them to survive a
+container replacement: `-v ./logs:/app/logs`.
 
-## Current Limitations
+Point Home Assistant or Custom Conversation at
+`http://proxy-host:8000/v1`. The proxy forwards from there to
+`OPENAI_API_URL`.
 
-By definition, this concept introduces some restrictions on how creative your prompt can be. You can no longer say
-"_Make me regret my life_" and expect the LLM to play Despacito, because the proxy is not guaranteed to include the
-media control tool with such a request. The LLM might understand you, but the embedding model in the proxy will not 
-provide it with a tool to actually fulfil your request. In practice this means being more explicit with your prompts. 
-("_Turn on the lights_" instead of "_Hello darkness my old friend_", "_Play some music_" instead of 
-"_Make me feel better_".)
+## How selection works
 
-There is a primitive fallback mechanism for very short prompts (designed to catch the use case of an assistant asking 
-for confirmation before executing a tool).
+For each Chat Completions request, the proxy:
 
-That being said, there are also some technical limitations:
+1. Considers only tools included in that request. Deleted HA tools cannot leak
+   back in from old state.
+2. Always prioritizes a specifically named `tool_choice`, then configured
+   whitelist entries.
+3. Excludes blacklisted tools unless a specifically named `tool_choice`
+   requires one.
+4. Scores the other tools against the latest user message using E5 retrieval
+   prefixes and each tool's name, description, and parameter schema.
+5. Keeps scores at or above `MIN_TOOL_SIMILARITY` until `TOOLS_TO_KEEP` is
+   reached.
 
-- No support for changing the list of tools. If you expose new tools, the proxy will pick the new additions up, but 
-deleting previously known tools is not supported yet. To avoid model picking up tools that are no longer available, 
-after changing the list of tools on HomeAssistant side, one should:
-    1. Stop the proxy server
-    2. Delete the files in `data` folder
-    3. Restart the proxy server
-    4. Accept the delay at the fisrt request as the model re-embeds the tool definitions.
+`TOOLS_TO_KEEP` is a hard maximum. Whitelisted tools consume slots. If the
+threshold accepts only one semantic match and one whitelist tool is present,
+the proxy returns two tools even when the maximum is three.
 
-- No multiprocessing (or even multithreading, really) support. This is probably fine for light home use for now. 
-Just don't share this proxy server between multiple HomeAssistant instances. 
-- Streaming responses is not really well tested.
-- No smart context support. The proxy only looks at the last user message (and the previous assistant message, if the 
-last user message is very short) to decide which tools to include.
+With `tool_choice: "required"`, at least one candidate is retained when
+possible, even if every score is below the threshold. With a named tool choice,
+that exact tool receives first priority.
 
-That all being said, the proxy works well for my use case and I hope it will work well for you too.
+Tool embeddings are cached in `data/tool_embeddings.sqlite3`. The cache key
+includes the complete canonical tool schema and embedding-model name, so schema
+changes generate fresh embeddings. The embedding model itself is loaded lazily
+on the first request that needs semantic selection.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `OPENAI_API_URL` | `https://api.openai.com/v1` | Upstream OpenAI-compatible `/v1` base URL |
+| `OPENAI_API_KEY` | empty | Authorization key sent upstream; incoming authorization is preserved when empty |
+| `TOOLS_TO_KEEP` | `3` | Hard maximum number of tools forwarded |
+| `MIN_TOOL_SIMILARITY` | `0.75` | Minimum cosine similarity for non-mandatory tools |
+| `WHITELISTED_TOOLS` | `GetLiveContext` | Tools given priority on every request |
+| `BLACKLISTED_TOOLS` | `HassHumidifierMode,HassHumidifierSetPoint` | Tools normally excluded |
+| `EMBEDDING_MODEL` | `intfloat/e5-small-v2` | Hugging Face embedding model |
+| `EMBEDDING_CACHE` | `data/tool_embeddings.sqlite3` | SQLite cache path |
+| `LOG_LEVEL` | `INFO` | Python log level |
+| `DEBUG_LOG_DIR` | `logs` | Request-diagnostics directory used only at debug level |
+| `TOKENIZER_MODEL` | inferred | Tokenizer repository used for debug token counts |
+
+Set either comma-separated tool list explicitly to an empty value to disable
+that list, for example `WHITELISTED_TOOLS=`.
+
+## Debug request and token diagnostics
+
+Set `LOG_LEVEL=DEBUG` to write one structured JSON file per Chat Completions
+request. Each file contains:
+
+- the body received from Home Assistant;
+- the body forwarded to the model server;
+- system, user, all-message, tool, and whole-request token counts for both;
+- the estimated number of request tokens removed by filtering.
+
+The tokenizer loads lazily on the first debug request. For a served model alias
+such as `qwen3`, set the actual tokenizer explicitly for the best count:
+
+```dotenv
+LOG_LEVEL=DEBUG
+TOKENIZER_MODEL=btbtyler09/Qwen3.8-27B-GPTQ-4bit
+DEBUG_LOG_DIR=logs
+```
+
+If the tokenizer cannot be loaded, diagnostics fall back to a clearly marked
+four-characters-per-token estimate rather than breaking the proxy. These counts
+measure the serialized OpenAI request components; the model server's final chat
+template may add a small number of tokens.
+
+Debug files contain complete prompts, tool schemas, and conversation history.
+Do not enable them casually on a shared machine, and do not publish the `logs`
+directory.
+
+To tune the threshold, run representative HA phrases at `LOG_LEVEL=DEBUG` and
+inspect the selected semantic scores. Raise the threshold to reduce prompt
+size; lower it if legitimate tools are being missed.
+
+## Local development and tests
+
+```bash
+python -m pip install -r requirements.txt -r requirements-dev.txt
+pytest --ignore=tests/test_litellm_compat.py
+```
+
+The compatibility test drives the proxy through LiteLLM's async `Router` with
+`stream=True` and `stream_options={"include_usage": True}`, matching Custom
+Conversation's current request path:
+
+```bash
+python -m pip install -r requirements-compat.txt
+pytest -m compatibility
+```
+
+CI runs that test against the pinned LiteLLM version from Custom Conversation's
+current manifest. A weekly/manual job reads the latest Custom Conversation
+manifest and tests whichever LiteLLM version it then requires.
+
+## Known trade-off
+
+Semantic filtering deliberately constrains indirect requests. “Turn on the
+kitchen lights” is safer than expecting an embedding model to infer the light
+tool from “hello darkness, my old friend.” The proxy fails open—forwarding the
+original tool list—if the selector itself errors, so an embedding failure does
+not take Home Assistant offline.

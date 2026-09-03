@@ -1,0 +1,2 @@
+# Pinned to Custom Conversation's manifest on 2026-09-02.
+litellm==1.81.4
