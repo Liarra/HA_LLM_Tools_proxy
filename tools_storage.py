@@ -18,6 +18,9 @@ from embedding import SemanticEmbedder
 
 logger = logging.getLogger(__name__)
 
+_EMBEDDING_TEXT_VERSION = "2"
+_COMMON_TARGET_PARAMETERS = frozenset({"name", "area", "floor"})
+
 
 class Embedder(Protocol):
     """Small protocol that keeps the selector straightforward to test."""
@@ -84,6 +87,35 @@ def _canonical_tool(tool: dict) -> str:
     return json.dumps(tool, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _embedding_parameters(parameters: object) -> object:
+    """Remove ubiquitous HA target fields that do not distinguish tools."""
+    if not isinstance(parameters, dict):
+        return parameters
+
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return parameters
+
+    filtered = dict(parameters)
+    filtered["properties"] = {
+        name: schema
+        for name, schema in properties.items()
+        if name not in _COMMON_TARGET_PARAMETERS
+    }
+
+    required = parameters.get("required")
+    if isinstance(required, list):
+        filtered_required = [
+            name for name in required if name not in _COMMON_TARGET_PARAMETERS
+        ]
+        if filtered_required:
+            filtered["required"] = filtered_required
+        else:
+            filtered.pop("required", None)
+
+    return filtered
+
+
 def _tool_text(tool: dict) -> str:
     function = tool.get("function", {})
     return "\n".join(
@@ -92,7 +124,7 @@ def _tool_text(tool: dict) -> str:
             f"Description: {function.get('description', '')}",
             "Parameters: "
             + json.dumps(
-                function.get("parameters", {}),
+                _embedding_parameters(function.get("parameters", {})),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -130,7 +162,10 @@ class ToolSelector:
         self._selection_lock = Lock()
 
     def _cache_key(self, tool: dict) -> str:
-        value = f"{self.embedder.model_name}\0{_canonical_tool(tool)}"
+        value = (
+            f"{self.embedder.model_name}\0{_EMBEDDING_TEXT_VERSION}\0"
+            f"{_canonical_tool(tool)}"
+        )
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def _tool_vectors(self, tools: Sequence[dict]) -> np.ndarray:
