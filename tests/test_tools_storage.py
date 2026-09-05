@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from tools_storage import ToolSelector, tool_name
+from tools_storage import ToolSelector, _tool_text, tool_name
 
 
 def tool(name: str, description: str = "", *, kind: str = "string") -> dict:
@@ -44,6 +44,37 @@ class FakeEmbedder:
 
 def names(tools: list[dict]) -> list[str]:
     return [tool_name(item) for item in tools]
+
+
+def test_tool_text_omits_common_target_parameters() -> None:
+    light_tool = {
+        "type": "function",
+        "function": {
+            "name": "HassLightSet",
+            "description": "Sets the brightness of a light",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "area": {"type": "string"},
+                    "floor": {"type": "string"},
+                    "brightness": {
+                        "type": "integer",
+                        "description": "Brightness percentage",
+                    },
+                },
+                "required": ["name", "brightness"],
+            },
+        },
+    }
+
+    text = _tool_text(light_tool)
+
+    assert '"name"' not in text
+    assert '"area"' not in text
+    assert '"floor"' not in text
+    assert '"brightness"' in text
+    assert '"required":["brightness"]' in text
 
 
 def test_threshold_can_return_fewer_than_maximum() -> None:
@@ -151,6 +182,28 @@ def test_cache_key_includes_full_schema(tmp_path) -> None:
     selector.select([tool("TurnOnLight", kind="string")], "turn it on")
     selector.select([tool("TurnOnLight", kind="integer")], "turn it on")
 
+    assert len(embedder.passage_batches) == 2
+
+
+def test_cache_key_includes_parameters_omitted_from_embedding_text(tmp_path) -> None:
+    embedder = FakeEmbedder({"TurnOnLight": 0.9})
+    selector = ToolSelector(
+        max_tools=1,
+        min_similarity=0,
+        whitelisted_names=(),
+        blacklisted_names=(),
+        embedder=embedder,
+        cache_path=tmp_path / "embeddings.sqlite3",
+    )
+    string_name = tool("TurnOnLight")
+    string_name["function"]["parameters"]["properties"] = {"name": {"type": "string"}}
+    integer_name = tool("TurnOnLight")
+    integer_name["function"]["parameters"]["properties"] = {"name": {"type": "integer"}}
+
+    selector.select([string_name], "turn it on")
+    selector.select([integer_name], "turn it on")
+
+    assert embedder.passage_batches[0] == embedder.passage_batches[1]
     assert len(embedder.passage_batches) == 2
 
 
