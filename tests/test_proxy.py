@@ -23,9 +23,40 @@ def tool(name: str) -> dict:
 class StubSelector:
     def __init__(self, selected: list[dict]) -> None:
         self.selected = selected
+        self.messages = None
 
     def select(self, tools, query, **kwargs) -> Selection:
+        self.messages = kwargs.get("messages")
         return Selection(self.selected, {"SelectedTool": 0.9})
+
+
+def test_proxy_passes_full_history_and_preserves_messages():
+    messages = [
+        {"role": "user", "content": "Increase brightness"},
+        {"role": "assistant", "content": "Done"},
+        {"role": "user", "content": "Again"},
+        {"role": "user", "content": "Again"},
+    ]
+    selector = StubSelector([tool("SelectedTool")])
+
+    def upstream(request):
+        assert json.loads(request.content)["messages"] == messages
+        return httpx.Response(200, json={"choices": []})
+
+    app = create_app(
+        config=config(), selector=selector, transport=httpx.MockTransport(upstream)
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test",
+                "messages": messages,
+                "tools": [tool("SelectedTool")],
+            },
+        )
+    assert response.status_code == 200
+    assert selector.messages == messages
 
 
 class StubDiagnostics:

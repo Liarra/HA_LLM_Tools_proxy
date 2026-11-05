@@ -7,8 +7,9 @@ import json
 import logging
 import re
 import sqlite3
+from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Protocol
@@ -39,6 +40,7 @@ class Selection:
 
     tools: list[dict]
     scores: dict[str, float]
+    trace: list[dict] = field(default_factory=list)
 
 
 class EmbeddingCache:
@@ -233,12 +235,17 @@ class ToolSelector:
         *,
         required_names: Sequence[str] = (),
         require_at_least_one: bool = False,
+        messages: Sequence[dict] | None = None,
     ) -> Selection:
         """Select at most ``max_tools`` from only this request's tools.
 
         Explicitly required tools take priority, followed by configured whitelist
         entries. Both consume the same hard budget as semantic matches.
         """
+        if messages is not None:
+            return self._select_history(
+                tools, messages, required_names, require_at_least_one
+            )
         if self.max_tools == 0 or not tools:
             return Selection([], {})
 
@@ -313,3 +320,109 @@ class ToolSelector:
                     break
 
             return Selection(selected, scores)
+
+    def _select_history(
+        self,
+        tools: Sequence[dict],
+        messages: Sequence[dict],
+        required_names: Sequence[str],
+        require_at_least_one: bool,
+    ) -> Selection:
+        """Replay this request only; no mutable conversation state is shared.
+
+        Mandatory tools are pinned and consume budget. Semantic matches refresh
+        LRU order; ties favour the input catalog order. Successful tool results
+        refresh their matching call, but failed/unknown calls do not.
+        """
+        pinned = self.select(tools, "", required_names=required_names).tools
+        pinned_names = {tool_name(tool) for tool in pinned}
+        capacity = self.max_tools - len(pinned)
+        if capacity <= 0 or not tools:
+            return Selection(pinned, {})
+        available = {
+            tool_name(tool): tool
+            for tool in tools
+            if tool_name(tool) not in pinned_names
+            and tool_name(tool) not in self.blacklisted_names
+        }
+        active: OrderedDict[str, dict] = OrderedDict()
+        scores: dict[str, float] = {}
+        trace: list[dict] = []
+        pending: dict[str, str] = {}
+        queries: dict[str, Selection] = {}
+
+        def touch(name: str, event: dict) -> None:
+            if name not in available:
+                return
+            refreshed = name in active
+            active[name] = available[name]
+            active.move_to_end(name)
+            evicted = None
+            if len(active) > capacity:
+                evicted, _ = active.popitem(last=False)
+                scores.pop(evicted, None)
+            trace.append(
+                {**event, "tool": name, "refresh": refreshed, "evicted": evicted}
+            )
+
+        for index, message in enumerate(messages):
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "user":
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    )
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if content not in queries:
+                    queries[content] = self.select(
+                        tools, content, required_names=required_names
+                    )
+                matches = queries[content]
+                trace.append(
+                    {"message": index, "query": content, "scores": matches.scores}
+                )
+                # Best match is most recent; weaker matches must not evict it.
+                for tool in reversed(matches.tools):
+                    name = tool_name(tool)
+                    touch(name, {"message": index, "source": "semantic"})
+                    if name in active and name in matches.scores:
+                        scores[name] = matches.scores[name]
+            elif role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    function = call.get("function")
+                    if isinstance(function, dict) and isinstance(call.get("id"), str):
+                        name = function.get("name")
+                        if isinstance(name, str):
+                            pending[call["id"]] = name
+            elif role == "tool":
+                name = pending.pop(message.get("tool_call_id"), None)
+                if name is None:
+                    continue
+                result = message.get("content")
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except (ValueError, TypeError):
+                        # Unknown result format is not evidence of success.
+                        continue
+                if (
+                    not isinstance(result, dict)
+                    or result.get("error")
+                    or result.get("isError")
+                ):
+                    continue
+                touch(name, {"message": index, "source": "tool_success"})
+
+        selected = pinned + list(reversed(active.values()))
+        if not selected and require_at_least_one:
+            fallback = self.select(tools, "", require_at_least_one=True)
+            return Selection(fallback.tools, {}, trace)
+        return Selection(selected, scores, trace)
