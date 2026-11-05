@@ -228,6 +228,7 @@ def create_app(
                         selector.select,
                         tools,
                         selection_query(body),
+                        messages=body.get("messages", []),
                         required_names=_required_tool_names(body),
                         require_at_least_one=body.get("tool_choice") == "required",
                     )
@@ -245,6 +246,7 @@ def create_app(
                         ", ".join(tool_name(tool) for tool in selected.tools) or "none",
                     )
                     logger.debug("Semantic scores: %s", selected.scores)
+                    logger.debug("Chronological selection trace: %s", selected.trace)
                 except Exception:
                     logger.exception(
                         "Tool selection failed; forwarding all request tools"

@@ -66,10 +66,26 @@ For each Chat Completions request, the proxy:
    whitelist entries.
 3. Excludes blacklisted tools unless a specifically named `tool_choice`
    requires one.
-4. Scores the other tools against the latest user message using E5 retrieval
-   prefixes and each tool's name, description, and parameter schema.
-5. Keeps scores at or above `MIN_TOOL_SIMILARITY` until `TOOLS_TO_KEEP` is
-   reached.
+4. Replays user messages from oldest to newest, scoring each against the current
+   catalog. Matches at or above `MIN_TOOL_SIMILARITY` enter a bounded LRU set;
+   existing matches become recent and new matches evict the least recent tool.
+   Within a turn, the strongest match becomes most recent.
+5. Refreshes exact tools after successful JSON-object tool results. Failed,
+   missing, or unrecognised results do not refresh tools; hallucinated or no
+   longer available tool names cannot enter the set.
+6. Returns pinned tools followed by the active set, most recent first.
+
+Mandatory tools cannot be evicted and consume the same budget. Every request
+reconstructs its own set from its supplied history; there is no shared session
+state. Repeated identical user text is scored once per request. Assistant prose
+is not embedded: a low-scoring follow-up such as "Again" preserves the previous
+set, but a false-positive score can still introduce a wrong tool. Truncated
+history necessarily loses older context. This changes tool availability, not
+the messages forwarded to the model, and never executes tools itself.
+
+Debug logs include chronological queries, admitted scores, refresh sources,
+and evictions. These traces are in the application log, alongside the existing
+JSON request snapshots.
 
 `TOOLS_TO_KEEP` is a hard maximum. Whitelisted tools consume slots. If the
 threshold accepts only one semantic match and one whitelist tool is present,
