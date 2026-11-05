@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from embedding import SemanticEmbedder
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDING_TEXT_VERSION = "2"
+_EMBEDDING_TEXT_VERSION = "3"
 _COMMON_TARGET_PARAMETERS = frozenset({"name", "area", "floor"})
 
 
@@ -116,18 +117,52 @@ def _embedding_parameters(parameters: object) -> object:
     return filtered
 
 
+def _unbrand(text: str) -> str:
+    """Remove HA branding without damaging words such as 'chassis'."""
+    return re.sub(
+        r"(?<![a-zA-Z])(?i:hass|home[ _-]*assistant)(?=$|[^a-zA-Z]|[A-Z])",
+        "",
+        text,
+    )
+
+
+def _identifier_words(identifier: str) -> str:
+    text = _unbrand(identifier.replace("_", " "))
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    return " ".join(text.lower().split())
+
+
+def _retrieval_text(text: str) -> str:
+    """Normalise explicit tool IDs and branding in retrieval-only text."""
+    text = re.sub(
+        r"\b([A-Za-z][A-Za-z0-9_]*)__([A-Za-z][A-Za-z0-9_]*)\b",
+        lambda match: " ".join(
+            filter(None, (_identifier_words(part) for part in match.groups()))
+        ),
+        text,
+    )
+    return _unbrand(text)
+
+
 def _tool_text(tool: dict) -> str:
     function = tool.get("function", {})
+    domain, separator, action = function.get("name", "").partition("__")
+    if not separator:
+        domain, action = "", domain
     return "\n".join(
         (
-            f"Function name: {function.get('name', '')}",
-            f"Description: {function.get('description', '')}",
+            f"Domain: {_identifier_words(domain)}",
+            f"Action: {_identifier_words(action)}",
+            f"Description: {_retrieval_text(function.get('description', ''))}",
             "Parameters: "
-            + json.dumps(
-                _embedding_parameters(function.get("parameters", {})),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
+            + _retrieval_text(
+                json.dumps(
+                    _embedding_parameters(function.get("parameters", {})),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             ),
         )
     )
@@ -255,7 +290,7 @@ class ToolSelector:
                     return Selection([candidates[0]], {})
                 return Selection(mandatory, {})
 
-            query_vector = self.embedder.encode_query(query)
+            query_vector = self.embedder.encode_query(_retrieval_text(query))
             tool_vectors = self._tool_vectors(candidates)
             similarities = tool_vectors @ query_vector
             ranked = sorted(
